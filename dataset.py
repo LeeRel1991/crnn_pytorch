@@ -11,7 +11,7 @@ import six
 import sys
 from PIL import Image
 import numpy as np
-
+import os
 
 class lmdbDataset(Dataset):
 
@@ -64,6 +64,119 @@ class lmdbDataset(Dataset):
                 label = self.target_transform(label)
 
         return (img, label)
+
+
+class PathDataset(Dataset):
+    def __init__(self, root, alphabetChinese, transform=None, target_transform=None):
+        """
+        加载本地目录图片
+        目录结构：
+        dataset/images 存放文本行图片
+        dataset/labels.txt 存放每张文本行图像对应的真值字符串，一个样本一行，每行格式如下：
+                            pic_0001.jpg 你好中国
+
+        """
+
+        self.root = root
+        self.jpgPaths = os.listdir(os.path.join(root, "images"))
+        self.jpgPaths.sort()
+        self.nSamples = len(self.jpgPaths)
+
+        with open(os.path.join(root, "labels.txt"), "r") as f:
+            self.labels = f.readlines()
+        self.labels = [x.strip().split(' ') for x in self.labels]
+        self.labels = sorted(self.labels, key=lambda x: x[0])
+
+        self.alphabetChinese = alphabetChinese
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        if index >= len(self):
+            index = 0
+
+        imP = os.path.join(self.root, "images", self.jpgPaths[index])
+        im = Image.open(imP).convert('L')
+
+        label = self.labels[index][1]
+        label = ''.join([x for x in label if x in self.alphabetChinese])
+
+        if self.transform is not None:
+            im = self.transform(im)
+
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+
+        return im, label
+
+
+class SytheticChinese(Dataset):
+    def __init__(self, root, phase="train", transform=None, target_transform=None):
+        """
+
+        :param root: 数据集目录
+        :param phase: 'test' or 'train' 指定数据用于训练还是测试
+        :param transform: 
+        :param target_transform:
+
+        ---------------------------------------------------------        
+        目录结构：
+        root/images 存放文本行图片
+        root/char_std_5990.txt 字符集，一个字符一行
+        root/data_test.txt 测试的样本名及label
+        root/data_train.txt 训练的样本名及label。一个样本一行，每行格式如下：
+                            pic_0001.jpg label_id1 label_id2 ...
+        """
+        """
+
+
+        """
+        self.root = root
+
+        with open(os.path.join(root, "char_std_5990.txt"), 'r') as f:
+            self.charset = f.readlines()
+        self.charset = [x.strip() for x in self.charset]
+
+        with open(os.path.join(root, "data_%s.txt" % phase), 'r') as f:
+            self.sample_labels = f.readlines()
+
+        self.nSamples = len(self.sample_labels)
+
+        self.transform = transform
+        self.target_transform = target_transform
+
+    @property
+    def alphabet(self):
+        return "".join(self.charset[1:])
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        if index >= len(self):
+            index = 0
+
+        line_str = self.sample_labels[index].strip().split(' ')
+        jpg_file = os.path.join(self.root, 'images', line_str[0])
+        if not os.path.exists(jpg_file):
+            print("warning: file %s not exist." % jpg_file)
+
+        im = Image.open(jpg_file).convert('L')
+
+        label = ""
+        for char_id in line_str[1:]:
+            label += self.charset[int(char_id)]
+
+        if self.transform is not None:
+            im = self.transform(im)
+
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+
+        return im, label
 
 
 class resizeNormalize(object):

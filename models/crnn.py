@@ -15,6 +15,7 @@ class BidirectionalLSTM(nn.Module):
         t_rec = recurrent.view(T * b, h)
 
         output = self.embedding(t_rec)  # [T * b, nOut]
+
         output = output.view(T, b, -1)
 
         return output
@@ -75,5 +76,7 @@ class CRNN(nn.Module):
 
         # rnn features
         output = self.rnn(conv)
-
+        output = output.transpose(1, 0)
+        # print('blstm ', output.size())
+        print("in Module ", output.size())
         return output
