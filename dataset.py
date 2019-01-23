@@ -228,6 +228,12 @@ class alignCollate(object):
         self.min_ratio = min_ratio
 
     def __call__(self, batch):
+        """
+        将一个batch的图片转为tenor。支持不定长图像batch，输出的高度为设置值(32）,宽度取batch中最大值(寬高比最大值*预设的高度),
+        靠左对齐，宽度不够的填充默认0
+        :param batch: 
+        :return: 
+        """
         images, labels = zip(*batch)
 
         imgH = self.imgH
@@ -239,11 +245,20 @@ class alignCollate(object):
                 ratios.append(w / float(h))
             ratios.sort()
             max_ratio = ratios[-1]
-            imgW = int(np.floor(max_ratio * imgH))
-            imgW = max(imgH * self.min_ratio, imgW)  # assure imgH >= imgW
+        imgW = int(np.floor(max_ratio * imgH))
+        imgW = max(imgH * self.min_ratio, imgW)  # assure imgH >= imgW
+        batch_size = len(images)
+        out_images = np.zeros([batch_size, 1, imgH, imgW])
 
-        transform = resizeNormalize((imgW, imgH))
-        images = [transform(image) for image in images]
-        images = torch.cat([t.unsqueeze(0) for t in images], 0)
-
-        return images, labels
+        for i, image in enumerate(images):
+            w, h = image.size
+            newW = int(w * imgH/h)
+            image = image.resize((newW, imgH), Image.BILINEAR)
+            image_arr = np.array(image, dtype=np.float32)
+            image_arr = image_arr/255.0
+            image_arr = image_arr -0.5/0.5
+            print('actual w ', imgH, newW)
+            out_images[i, 0, :,:newW] = image_arr
+        print('out batch ', out_images.shape)
+        out_tensor = torch.FloatTensor(out_images)
+        return out_tensor, labels
