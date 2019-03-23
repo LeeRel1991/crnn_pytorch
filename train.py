@@ -15,23 +15,24 @@ import utils
 import dataset
 
 import models.crnn as crnn
+from models.keys import alphabet
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--trainRoot', required=True, help='path to dataset')
 parser.add_argument('--valRoot', required=True, help='path to dataset')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
-parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
+parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
 parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')
-parser.add_argument('--imgW', type=int, default=100, help='the width of the input image to network')
+parser.add_argument('--imgW', type=int, default=280, help='the width of the input image to network')
 parser.add_argument('--nh', type=int, default=256, help='size of the lstm hidden state')
 parser.add_argument('--nepoch', type=int, default=25, help='number of epochs to train for')
 # TODO(meijieru): epoch -> iter
 parser.add_argument('--cuda', action='store_true', help='enables cuda')
 parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
-parser.add_argument('--pretrained', default='', help="path to pretrained model (to continue training)")
+parser.add_argument('--pretrained', default='/media/lirui/Personal/DeepLearning/SceneTextDetect/SceneOCR/model/ocr-lstm.pth', help="path to pretrained model (to continue training)")
 parser.add_argument('--alphabet', type=str, default='0123456789abcdefghijklmnopqrstuvwxyz')
 parser.add_argument('--expr_dir', default='expr', help='Where to store samples and models')
-parser.add_argument('--displayInterval', type=int, default=500, help='Interval to be displayed')
+parser.add_argument('--displayInterval', type=int, default=10, help='Interval to be displayed')
 parser.add_argument('--n_test_disp', type=int, default=10, help='Number of samples to display when test')
 parser.add_argument('--valInterval', type=int, default=500, help='Interval to be displayed')
 parser.add_argument('--saveInterval', type=int, default=500, help='Interval to be displayed')
@@ -57,26 +58,14 @@ cudnn.benchmark = True
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
-train_dataset = dataset.lmdbDataset(root=opt.trainroot)
-assert train_dataset
-if not opt.random_sample:
-    sampler = dataset.randomSequentialSampler(train_dataset, opt.batchSize)
-else:
-    sampler = None
-train_loader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=opt.batchSize,
-    shuffle=True, sampler=sampler,
-    num_workers=int(opt.workers),
-    collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
-test_dataset = dataset.lmdbDataset(
-    root=opt.valroot, transform=dataset.resizeNormalize((100, 32)))
 
-nclass = len(opt.alphabet) + 1
+test_dataset = dataset.PathDataset(opt.valRoot, alphabet)
+
+nclass = len(alphabet) + 1
 nc = 1
 
-converter = utils.strLabelConverter(opt.alphabet)
+converter = utils.strLabelConverter(alphabet)
 criterion = CTCLoss()
-
 
 # custom weights initialization called on crnn
 def weights_init(m):
@@ -92,7 +81,16 @@ crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
 crnn.apply(weights_init)
 if opt.pretrained != '':
     print('loading pretrained model from %s' % opt.pretrained)
-    crnn.load_state_dict(torch.load(opt.pretrained))
+    # crnn.load_state_dict(torch.load(opt.pretrained))
+    pre_weight_dict = torch.load(opt.pretrained, map_location=lambda storage, loc: storage)  ##加入项目训练的权重
+    new_state_dict = crnn.state_dict()
+    for k, v in pre_weight_dict.items():
+        # if "num_batches_tracked" not in k:
+        if "num_batches_tracked" not in k:
+            name = k.replace('module.', '')  # remove `module.`
+            new_state_dict[name] = v
+
+    crnn.load_state_dict(new_state_dict)
 print(crnn)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
@@ -122,7 +120,7 @@ else:
     optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
 
 
-def val(net, dataset, criterion, max_iter=100):
+def val(net, val_data, criterion, max_iter=100):
     print('Start val')
 
     for p in crnn.parameters():
@@ -130,7 +128,8 @@ def val(net, dataset, criterion, max_iter=100):
 
     net.eval()
     data_loader = torch.utils.data.DataLoader(
-        dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers))
+        val_data, shuffle=False, batch_size=opt.batchSize, num_workers=int(opt.workers),
+        collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=True))
     val_iter = iter(data_loader)
 
     i = 0
@@ -149,12 +148,14 @@ def val(net, dataset, criterion, max_iter=100):
         utils.loadData(length, l)
 
         preds = crnn(image)
+        print("first ", preds.size())
         preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
 
         _, preds = preds.max(2)
-        preds = preds.squeeze(2)
+        print("pred ", preds.size(), preds_size)
+        # preds = preds.squeeze(2)
         preds = preds.transpose(1, 0).contiguous().view(-1)
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
         for pred, target in zip(sim_preds, cpu_texts):
@@ -179,6 +180,7 @@ def trainBatch(net, criterion, optimizer):
     utils.loadData(length, l)
 
     preds = crnn(image)
+
     preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
     cost = criterion(preds, text, preds_size, length) / batch_size
     crnn.zero_grad()
@@ -187,27 +189,5 @@ def trainBatch(net, criterion, optimizer):
     return cost
 
 
-for epoch in range(opt.nepoch):
-    train_iter = iter(train_loader)
-    i = 0
-    while i < len(train_loader):
-        for p in crnn.parameters():
-            p.requires_grad = True
-        crnn.train()
+val(crnn, test_dataset, criterion)
 
-        cost = trainBatch(crnn, criterion, optimizer)
-        loss_avg.add(cost)
-        i += 1
-
-        if i % opt.displayInterval == 0:
-            print('[%d/%d][%d/%d] Loss: %f' %
-                  (epoch, opt.nepoch, i, len(train_loader), loss_avg.val()))
-            loss_avg.reset()
-
-        if i % opt.valInterval == 0:
-            val(crnn, test_dataset, criterion)
-
-        # do checkpointing
-        if i % opt.saveInterval == 0:
-            torch.save(
-                crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.expr_dir, epoch, i))
